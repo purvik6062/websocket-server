@@ -72,6 +72,58 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('reject_session', ({
+        attendee_address,
+        dataToSendGuest }) => {
+        console.log("received reject session notification");
+        console.log("host_address", attendee_address);
+        console.log("dataToSendHost", dataToSendGuest);
+        console.log("hostSockets", hostSockets)
+        if (hostSockets[attendee_address]) {
+            io.to(hostSockets[attendee_address]).emit('new_notification', dataToSendGuest);
+            console.log("new reject notification message emitted to guest");
+        }
+    });
+
+    socket.on('session_started_by_host', ({
+        attendeeAddress,
+        dataToSendGuest }) => {
+        console.log("received reject session notification");
+        console.log("attendeeAddress", attendeeAddress);
+        console.log("dataToSendGuest", dataToSendGuest);
+        console.log("hostSockets", hostSockets)
+        if (hostSockets[attendeeAddress]) {
+            io.to(hostSockets[attendeeAddress]).emit('new_notification', dataToSendGuest);
+            console.log("new session started notification message emitted to guest");
+        }
+    });
+
+    socket.on('session_started_by_guest', ({
+        hostAddress,
+        dataToSendHost }) => {
+        console.log("received reject session notification");
+        console.log("hostAddress", hostAddress);
+        console.log("dataToSendHost", dataToSendHost);
+        console.log("hostSockets", hostSockets)
+        if (hostSockets[hostAddress]) {
+            io.to(hostSockets[hostAddress]).emit('new_notification', dataToSendHost);
+            console.log("new session started by guest notification message emitted to guest");
+        }
+    });
+
+    socket.on('received_offchain_attestation', ({
+        receiver_address,
+        dataToSend }) => {
+        console.log("received reject session notification");
+        console.log("receiver_address", receiver_address);
+        console.log("dataToSend", dataToSend);
+        console.log("hostSockets", hostSockets)
+        if (hostSockets[receiver_address]) {
+            io.to(hostSockets[receiver_address]).emit('new_notification', dataToSend);
+            console.log("new session started by guest notification message emitted to guest");
+        }
+    });
+
     socket.on('disconnect', () => {
         for (let address in activeSockets) {
             if (activeSockets[address] === socket.id) {
