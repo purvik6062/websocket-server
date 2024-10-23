@@ -105,7 +105,7 @@ async function processNotificationsWithSocket(commonAddresses, chain) {
         // Emit to specific address room
         io.on("connection", (socket) => {
           console.log("A client just connected", notification.receiver_address);
-          console.log("activeSockets::::", activeSockets,hostSockets);
+          console.log("activeSockets::::", activeSockets, hostSockets);
           io.to(hostSockets[notification.receiver_address]).emit(
             "new_notification",
             notification
@@ -200,10 +200,10 @@ class BlockchainListener {
         // Step 1: Create an array for subgraph addresses (if applicable)
         const subgraphAddresses = subgraphData?.delegators; // Adjust this to match the structure of your subgraph data
         let commonAddresses = [];
-        if(subgraphAddresses){
-                // Step 2: Use findCommonUsers to find common addresses
-                 commonAddresses = findCommonUsers(subgraphAddresses, dbAddresses);
-        }else{
+        if (subgraphAddresses) {
+          // Step 2: Use findCommonUsers to find common addresses
+          commonAddresses = findCommonUsers(subgraphAddresses, dbAddresses);
+        } else {
           console.log("no subgraph data found");
           return;
         }
@@ -211,7 +211,6 @@ class BlockchainListener {
         if (commonAddresses.length > 0) {
           console.log("Common addresses found:", commonAddresses);
           processNotificationsWithSocket(commonAddresses, chain);
-
         } else {
           // const commonAddresses = [
           //   "0xa0f97344e9699F0D5d54c4158F9cf9892828C7F8",
@@ -219,7 +218,6 @@ class BlockchainListener {
           // processNotificationsWithSocket(commonAddresses, chain);
           console.log("No common addresses found");
         }
-
         // io.emit("votecast", {
         //   chain,
         //   voter,
@@ -374,6 +372,70 @@ io.on("connection", (socket) => {
           dataToSendGuest
         );
         console.log("new notification message emitted to guest");
+      }
+    }
+  );
+  socket.on("reject_session", ({ attendee_address, dataToSendGuest }) => {
+    console.log("received reject session notification");
+    console.log("host_address", attendee_address);
+    console.log("dataToSendHost", dataToSendGuest);
+    console.log("hostSockets", hostSockets);
+    if (hostSockets[attendee_address]) {
+      io.to(hostSockets[attendee_address]).emit(
+        "new_notification",
+        dataToSendGuest
+      );
+      console.log("new reject notification message emitted to guest");
+    }
+  });
+
+  socket.on(
+    "session_started_by_host",
+    ({ attendeeAddress, dataToSendGuest }) => {
+      console.log("received reject session notification");
+      console.log("attendeeAddress", attendeeAddress);
+      console.log("dataToSendGuest", dataToSendGuest);
+      console.log("hostSockets", hostSockets);
+      if (hostSockets[attendeeAddress]) {
+        io.to(hostSockets[attendeeAddress]).emit(
+          "new_notification",
+          dataToSendGuest
+        );
+        console.log(
+          "new session started notification message emitted to guest"
+        );
+      }
+    }
+  );
+
+  socket.on("session_started_by_guest", ({ hostAddress, dataToSendHost }) => {
+    console.log("received reject session notification");
+    console.log("hostAddress", hostAddress);
+    console.log("dataToSendHost", dataToSendHost);
+    console.log("hostSockets", hostSockets);
+    if (hostSockets[hostAddress]) {
+      io.to(hostSockets[hostAddress]).emit("new_notification", dataToSendHost);
+      console.log(
+        "new session started by guest notification message emitted to guest"
+      );
+    }
+  });
+
+  socket.on(
+    "received_offchain_attestation",
+    ({ receiver_address, dataToSend }) => {
+      console.log("received reject session notification");
+      console.log("receiver_address", receiver_address);
+      console.log("dataToSend", dataToSend);
+      console.log("hostSockets", hostSockets);
+      if (hostSockets[receiver_address]) {
+        io.to(hostSockets[receiver_address]).emit(
+          "new_notification",
+          dataToSend
+        );
+        console.log(
+          "new session started by guest notification message emitted to guest"
+        );
       }
     }
   );
