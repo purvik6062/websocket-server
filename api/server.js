@@ -7,7 +7,6 @@ const { ethers } = require("ethers");
 const { Client, cacheExchange, fetchExchange, gql } = require("@urql/core");
 const fetch = require("cross-fetch");
 const mongoose = require("mongoose");
-const userRoutes = require("../routes/user"); // Import user routes
 const { getAllAddresses } = require("../controllers/userController");
 const Notification = require("../models/Notification");
 
@@ -17,7 +16,11 @@ const op_abi = require("../op_proposals_abi.json");
 const contractAddress = "0x789fC99093B09aD01C34DC7251D0C89ce743e5a4";
 const op_contractAddress = "0xcDF27F107725988f2261Ce2256bDfCdE8B382B10";
 
-// Updated URQL client configuration
+// Constants
+const MAX_RETRIES = 5;
+const RETRY_INTERVAL = 5000;
+
+// URQL client configuration
 const createSubgraphClient = (url) => {
   return new Client({
     url,
@@ -41,104 +44,306 @@ try {
   console.error("Error creating URQL clients:", error);
 }
 
-// Constants
-const MAX_RETRIES = 5;
-const RETRY_INTERVAL = 5000;
+// Notification Manager Class
+class NotificationManager {
+  constructor(io) {
+    this.io = io;
+    this.connectedClients = new Map();
+    this.pendingNotifications = new Map();
+    this.retryQueue = [];
+    this.initialize();
+  }
 
-const app = express();
-const server = http.createServer(app);
+  initialize() {
+    this.io.on("connection", (socket) => {
+      console.log("New client connected:", socket.id);
 
-// Connect to MongoDB
-mongoose
-  .connect(process.env.MONGODB_URI)
-  .then(() => console.log("Connected to MongoDB"))
-  .catch((err) => console.error("Failed to connect to MongoDB", err));
+      socket.on("register_host", async ({ hostAddress, socketId }) => {
+        try {
+          console.log("Host registration:", hostAddress);
 
-// Middleware to parse JSON
-app.use(express.json());
+          // Store connection with metadata
+          this.connectedClients.set(hostAddress, {
+            socketId: socketId,
+            lastActive: Date.now(),
+            socket: socket,
+          });
 
-app.use(
-  cors({
-    origin: process.env.BASE_URL,
-    methods: ["GET", "POST"],
-    credentials: true,
-  })
-);
+          // Set up room for this address
+          socket.join(hostAddress);
 
-const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-    credentials: true,
-  },
-});
+          // Send pending notifications
+          await this.sendPendingNotifications(hostAddress);
 
-const activeSockets = {};
-const hostSockets = {};
+          // Acknowledge registration
+          socket.emit("registration_successful", {
+            status: "success",
+            address: hostAddress,
+          });
+        } catch (error) {
+          console.error("Registration error:", error);
+          socket.emit("registration_error", { error: error.message });
+        }
+      });
 
-async function processNotificationsWithSocket(commonAddresses, chain) {
-  try {
-    console.log("Processing notifications with socket:", commonAddresses);
-    // Process notifications for each common address
-    const notifications = commonAddresses.map((address) => ({
-      receiver_address: address,
-      content: `New Vote cast detected for address ${address}`,
-      createdAt: Date.now(),
-      read_status: false,
-      notification_name: "Vote cast",
-      notification_title: "casted vote",
-      notification_type: "proposalVote",
-      additionalData: { chain },
-    }));
+      // // Handle other socket events
+      // socket.on("notification_received", (data) => {
+      //     this.handleNotificationAcknowledgment(data);
+      // });
 
-    // Save notifications and emit events
-    console.log("emitting new notification to address", notifications);
+      // socket.on("mark_notification_read", async (data) => {
+      //     await this.markNotificationAsRead(data);
+      // });
 
-    for (const notification of notifications) {
-      try {
-        // Save to database (uncomment and modify based on your database model)
-        // await YourNotificationModel.create(notification);
+      socket.on("sum", (result) => {
+        console.log("Sum result received: " + result);
+        io.emit("sum_result", result);
+      });
 
-        const notificationToSave = new Notification(notification);
-        const savedNotification = await notificationToSave.save();
-        console.log("Notification saved to database:", savedNotification);
-        // Emit to specific address room
-        io.on("connection", (socket) => {
-          console.log("A client just connected", notification.receiver_address);
-          console.log("activeSockets::::", activeSockets, hostSockets);
-          io.to(hostSockets[notification.receiver_address]).emit(
-            "new_notification",
-            notification
-          );
+      socket.on("register", (address) => {
+        console.log("address from socket", address);
+        activeSockets[address] = socket.id;
+      });
+
+      //   socket.on("register_host", ({ hostAddress, socketId }) => {
+      //     console.log("Host address registered for notifications:", hostAddress);
+      //     hostSockets[hostAddress] = socketId;
+      //   });
+
+      socket.on("send_message", ({ addresses, message }) => {
+        console.log("Sending message to addresses: ", addresses);
+        addresses.forEach((address) => {
+          if (activeSockets[address]) {
+            console.log(`Emitting message to ${address}`);
+            io.to(activeSockets[address]).emit("receive_message", message);
+          } else {
+            console.log(`No active socket for ${address}`);
+          }
         });
-        console.log(`Notification sent to ${notification.receiver_address}`);
-      } catch (error) {
-        console.error(
-          `Error processing notification for ${notification.receiver_address}:`,
-          error
+      });
+
+      socket.on(
+        "new_session",
+        ({
+          host_address,
+          dataToSendHost,
+          attendee_address,
+          dataToSendGuest,
+        }) => {
+          console.log("received new session notification");
+          console.log("host_address", host_address);
+          console.log("dataToSendHost", dataToSendHost);
+          console.log("hostSockets", hostSockets);
+          if (hostSockets[host_address]) {
+            io.to(hostSockets[host_address]).emit(
+              "new_notification",
+              dataToSendHost
+            );
+            console.log("new notification message emitted to host");
+          }
+          if (hostSockets[attendee_address]) {
+            io.to(hostSockets[attendee_address]).emit(
+              "new_notification",
+              dataToSendGuest
+            );
+            console.log("new notification message emitted to guest");
+          }
+        }
+      );
+      socket.on("reject_session", ({ attendee_address, dataToSendGuest }) => {
+        console.log("received reject session notification");
+        console.log("host_address", attendee_address);
+        console.log("dataToSendHost", dataToSendGuest);
+        console.log("hostSockets", hostSockets);
+        if (hostSockets[attendee_address]) {
+          io.to(hostSockets[attendee_address]).emit(
+            "new_notification",
+            dataToSendGuest
+          );
+          console.log("new reject notification message emitted to guest");
+        }
+      });
+
+      socket.on(
+        "session_started_by_host",
+        ({ attendeeAddress, dataToSendGuest }) => {
+          console.log("received reject session notification");
+          console.log("attendeeAddress", attendeeAddress);
+          console.log("dataToSendGuest", dataToSendGuest);
+          console.log("hostSockets", hostSockets);
+          if (hostSockets[attendeeAddress]) {
+            io.to(hostSockets[attendeeAddress]).emit(
+              "new_notification",
+              dataToSendGuest
+            );
+            console.log(
+              "new session started notification message emitted to guest"
+            );
+          }
+        }
+      );
+
+      socket.on(
+        "session_started_by_guest",
+        ({ hostAddress, dataToSendHost }) => {
+          console.log("received reject session notification");
+          console.log("hostAddress", hostAddress);
+          console.log("dataToSendHost", dataToSendHost);
+          console.log("hostSockets", hostSockets);
+          if (hostSockets[hostAddress]) {
+            io.to(hostSockets[hostAddress]).emit(
+              "new_notification",
+              dataToSendHost
+            );
+            console.log(
+              "new session started by guest notification message emitted to guest"
+            );
+          }
+        }
+      );
+
+      socket.on(
+        "received_offchain_attestation",
+        ({ receiver_address, dataToSend }) => {
+          console.log("received reject session notification");
+          console.log("receiver_address", receiver_address);
+          console.log("dataToSend", dataToSend);
+          console.log("hostSockets", hostSockets);
+          if (hostSockets[receiver_address]) {
+            io.to(hostSockets[receiver_address]).emit(
+              "new_notification",
+              dataToSend
+            );
+            console.log(
+              "new session started by guest notification message emitted to guest"
+            );
+          }
+        }
+      );
+
+      socket.on("disconnect", () => {
+        this.handleDisconnect(socket);
+      });
+    });
+
+    // Start retry mechanism for failed notifications
+    setInterval(() => this.processRetryQueue(), 30000);
+  }
+
+  async sendPendingNotifications(address) {
+    try {
+      const pendingNotifications = await Notification.find({
+        receiver_address: address,
+        read_status: false,
+      })
+        .sort({ createdAt: -1 })
+        .limit(10);
+
+      if (pendingNotifications.length > 0) {
+        const clientData = this.connectedClients.get(address);
+        if (clientData) {
+          this.io
+            .to(address)
+            .emit("pending_notifications", pendingNotifications);
+          console.log(
+            `Sent ${pendingNotifications.length} pending notifications to ${address}`
+          );
+        }
+      }
+    } catch (error) {
+      console.error("Error sending pending notifications:", error);
+    }
+  }
+
+  async sendNotification(notification) {
+    try {
+      // Save to database
+      const notificationDoc = new Notification(notification);
+      const savedNotification = await notificationDoc.save();
+
+      // Send to connected client
+      const receiverAddress = notification.receiver_address;
+      if (this.connectedClients.has(receiverAddress)) {
+        this.io.to(receiverAddress).emit("new_notification", savedNotification);
+
+        // Add to pending notifications until acknowledged
+        this.pendingNotifications.set(savedNotification._id.toString(), {
+          notification: savedNotification,
+          attempts: 1,
+          lastAttempt: Date.now(),
+        });
+
+        console.log(`Notification sent to ${receiverAddress}`);
+      } else {
+        console.log(
+          `Client ${receiverAddress} not connected, notification saved to DB`
         );
+        // this.addToRetryQueue(savedNotification);
+      }
+    } catch (error) {
+      console.error("Error sending notification:", error);
+    }
+  }
+
+  addToRetryQueue(notification) {
+    this.retryQueue.push({
+      notification,
+      attempts: 0,
+      nextAttempt: Date.now() + RETRY_INTERVAL,
+    });
+  }
+
+  async processRetryQueue() {
+    const now = Date.now();
+    this.retryQueue = this.retryQueue.filter(async (item) => {
+      if (item.nextAttempt <= now && item.attempts < MAX_RETRIES) {
+        try {
+          await this.sendNotification(item.notification);
+          item.attempts++;
+          item.nextAttempt = now + RETRY_INTERVAL * Math.pow(2, item.attempts);
+          return true;
+        } catch (error) {
+          console.error("Retry failed:", error);
+          return item.attempts < MAX_RETRIES;
+        }
+      }
+      return false;
+    });
+  }
+
+  async markNotificationAsRead(data) {
+    try {
+      await Notification.findByIdAndUpdate(data.notificationId, {
+        read_status: true,
+      });
+      console.log(`Notification ${data.notificationId} marked as read`);
+    } catch (error) {
+      console.error("Error marking notification as read:", error);
+    }
+  }
+
+  handleNotificationAcknowledgment(data) {
+    if (this.pendingNotifications.has(data.notificationId)) {
+      this.pendingNotifications.delete(data.notificationId);
+      console.log(`Notification ${data.notificationId} acknowledged`);
+    }
+  }
+
+  handleDisconnect(socket) {
+    for (const [address, data] of this.connectedClients.entries()) {
+      if (data.socketId === socket.id) {
+        this.connectedClients.delete(address);
+        console.log(`Client disconnected: ${address}`);
+        break;
       }
     }
-
-    return notifications;
-  } catch (error) {
-    console.error("Error in processNotificationsWithSocket:", error);
-    throw error;
   }
 }
 
-function findCommonUsers(array1, array2) {
-  // Step 1: Convert array2 to a Set for efficient lookups
-  const setArray2 = new Set(array2);
-
-  // Step 2: Filter array1 based on presence in setArray2
-  const commonUsers = array1.filter((user) => setArray2.has(user));
-
-  return commonUsers;
-}
-// Blockchain listener setup
+// Blockchain Listener Class
 class BlockchainListener {
-  constructor() {
+  constructor(notificationManager) {
+    this.notificationManager = notificationManager;
     this.retryCount = 0;
     this.isListening = false;
     this.providers = {};
@@ -156,12 +361,6 @@ class BlockchainListener {
 
       await this.providers.arbitrum.ready;
       await this.providers.optimism.ready;
-
-      // const commonAddresses = [activeSockets];
-
-      // const commonAddresses = ["0xa0f97344e9699F0D5d54c4158F9cf9892828C7F8"];
-      // const chain = "arbitrum";
-      // processNotificationsWithSocket(commonAddresses, chain);
       console.log("Providers are ready");
     } catch (error) {
       console.error("Error setting up providers:", error);
@@ -194,46 +393,23 @@ class BlockchainListener {
       try {
         const subgraphData = await this.getSubgraphUserData(voter, chain);
         console.log(`Subgraph data for ${voter} on ${chain}:`, subgraphData);
-        const dbAddresses = await getAllAddresses(); // Direct call to getAllAddresses
-        console.log("user data from db", dbAddresses);
+        const dbAddresses = await getAllAddresses();
 
-        // Step 1: Create an array for subgraph addresses (if applicable)
-        const subgraphAddresses = subgraphData?.delegators; // Adjust this to match the structure of your subgraph data
-        let commonAddresses = [];
-        if (subgraphAddresses) {
-          // Step 2: Use findCommonUsers to find common addresses
-          commonAddresses = findCommonUsers(subgraphAddresses, dbAddresses);
-        } else {
-          console.log("no subgraph data found");
-          return;
-        }
-        // Step 3: Process the common addresses
+        const subgraphAddresses = subgraphData?.delegators || [];
+        const commonAddresses = findCommonUsers(subgraphAddresses, dbAddresses);
+
         if (commonAddresses.length > 0) {
           console.log("Common addresses found:", commonAddresses);
-          processNotificationsWithSocket(commonAddresses, chain);
+          await this.processNotificationsWithSocket(commonAddresses, chain);
         } else {
           // const commonAddresses = [
           //   "0xa0f97344e9699F0D5d54c4158F9cf9892828C7F8",
+          //   "0x34849cec9e56c58a7597C243440eA45543AbdAf4",
           // ];
-          // processNotificationsWithSocket(commonAddresses, chain);
+          // const chain = "arbitrum";
+          // await this.processNotificationsWithSocket(commonAddresses, chain);
           console.log("No common addresses found");
         }
-        // io.emit("votecast", {
-        //   chain,
-        //   voter,
-        //   proposalId: proposalId.toString(),
-        //   support: Number(support),
-        //   votes: votes.toString(),
-        //   subgraphData,
-        // });
-
-        // if (activeSockets[voter.toLowerCase()]) {
-        //     io.to(activeSockets[voter.toLowerCase()]).emit('vote_notification', {
-        //         chain,
-        //         proposalId: proposalId.toString(),
-        //         votes: votes.toString()
-        //     });
-        // }
       } catch (error) {
         console.error(`Error processing vote cast on ${chain}:`, error);
       }
@@ -241,38 +417,73 @@ class BlockchainListener {
   }
 
   async getSubgraphUserData(address, chain) {
-    const DELEGATE_QUERY = gql`
-      query GetUserData($address: String!) {
-        delegate(id: $address) {
-          blockTimestamp
-          delegatedFromCount
-          delegators
-          id
-          latestBalance
+    let DELEGATE_QUERY;
+    if (chain === "arbitrum") {
+       DELEGATE_QUERY = gql`
+        query GetUserData($address: String!) {
+          delegate(id: $address) {
+            blockTimestamp
+            delegatedFromCount
+            delegators
+            id
+            latestBalance
+          }
         }
-      }
-    `;
+      `;
+    } else if (chain === "optimism") {
+       DELEGATE_QUERY = gql`
+        query GetUserData($address: String!) {
+          Delegate_by_pk(id: $address) {
+            delegatedFromCount
+            delegators
+            id
+            latestBalance
+          }
+        }
+      `;
+    }
 
     try {
       const client = chain === "arbitrum" ? arbClient : optimismClient;
       if (!client) {
         throw new Error(`No client available for chain: ${chain}`);
       }
-
-      const result = await client
+      let result;
+if(chain === "arbitrum"){
+       result = await client
         .query(DELEGATE_QUERY, {
           address: address.toLowerCase(),
         })
         .toPromise();
-
-      if (result.error) {
-        throw result.error;
-      }
-
+    }else if(chain === "optimism"){
+        result = await client
+        .query(DELEGATE_QUERY, {
+          address: address,
+        })
+        .toPromise();
+    }
+      if (result.error) throw result.error;
       return result.data?.delegate || null;
     } catch (error) {
       console.error(`Error fetching subgraph data for ${chain}:`, error);
       return null;
+    }
+  }
+
+  async processNotificationsWithSocket(commonAddresses, chain) {
+    for (const address of commonAddresses) {
+      const notification = {
+        receiver_address: address,
+        content: `New Vote cast detected for address ${address}`,
+        createdAt: Date.now(),
+        read_status: false,
+        notification_name: "Vote cast",
+        notification_title: "casted vote",
+        notification_type: "proposalVote",
+        additionalData: { chain },
+      };
+
+      await this.notificationManager.sendNotification(notification);
     }
   }
 
@@ -288,11 +499,11 @@ class BlockchainListener {
       this.contracts.optimism.on("VoteCast", opHandler);
       this.contracts.arbitrum.on("VoteCastWithParams", arbHandler);
       this.contracts.optimism.on("VoteCastWithParams", opHandler);
+
       this.isListening = true;
       console.log("Blockchain listener started successfully");
     } catch (error) {
       console.error("Error starting blockchain listener:", error);
-
       if (this.retryCount < MAX_RETRIES) {
         console.log(
           `Retrying in ${RETRY_INTERVAL}ms... (Attempt ${this.retryCount + 1})`
@@ -322,144 +533,49 @@ class BlockchainListener {
   }
 }
 
-io.on("connection", (socket) => {
-  console.log("A client just connected");
+// Utility Functions
+function findCommonUsers(array1, array2) {
+  const setArray2 = new Set(array2);
+  return array1.filter((user) => setArray2.has(user));
+}
 
-  socket.on("sum", (result) => {
-    console.log("Sum result received: " + result);
-    io.emit("sum_result", result);
-  });
+// Express Server Setup
+const app = express();
+const server = http.createServer(app);
 
-  socket.on("register", (address) => {
-    console.log("address from socket", address);
-    activeSockets[address] = socket.id;
-  });
+// Middleware
+app.use(express.json());
+app.use(
+  cors({
+    origin: process.env.BASE_URL,
+    methods: ["GET", "POST"],
+    credentials: true,
+  })
+);
 
-  socket.on("register_host", ({ hostAddress, socketId }) => {
-    console.log("Host address registered for notifications:", hostAddress);
-    hostSockets[hostAddress] = socketId;
-  });
-
-  socket.on("send_message", ({ addresses, message }) => {
-    console.log("Sending message to addresses: ", addresses);
-    addresses.forEach((address) => {
-      if (activeSockets[address]) {
-        console.log(`Emitting message to ${address}`);
-        io.to(activeSockets[address]).emit("receive_message", message);
-      } else {
-        console.log(`No active socket for ${address}`);
-      }
-    });
-  });
-
-  socket.on(
-    "new_session",
-    ({ host_address, dataToSendHost, attendee_address, dataToSendGuest }) => {
-      console.log("received new session notification");
-      console.log("host_address", host_address);
-      console.log("dataToSendHost", dataToSendHost);
-      console.log("hostSockets", hostSockets);
-      if (hostSockets[host_address]) {
-        io.to(hostSockets[host_address]).emit(
-          "new_notification",
-          dataToSendHost
-        );
-        console.log("new notification message emitted to host");
-      }
-      if (hostSockets[attendee_address]) {
-        io.to(hostSockets[attendee_address]).emit(
-          "new_notification",
-          dataToSendGuest
-        );
-        console.log("new notification message emitted to guest");
-      }
-    }
-  );
-  socket.on("reject_session", ({ attendee_address, dataToSendGuest }) => {
-    console.log("received reject session notification");
-    console.log("host_address", attendee_address);
-    console.log("dataToSendHost", dataToSendGuest);
-    console.log("hostSockets", hostSockets);
-    if (hostSockets[attendee_address]) {
-      io.to(hostSockets[attendee_address]).emit(
-        "new_notification",
-        dataToSendGuest
-      );
-      console.log("new reject notification message emitted to guest");
-    }
-  });
-
-  socket.on(
-    "session_started_by_host",
-    ({ attendeeAddress, dataToSendGuest }) => {
-      console.log("received reject session notification");
-      console.log("attendeeAddress", attendeeAddress);
-      console.log("dataToSendGuest", dataToSendGuest);
-      console.log("hostSockets", hostSockets);
-      if (hostSockets[attendeeAddress]) {
-        io.to(hostSockets[attendeeAddress]).emit(
-          "new_notification",
-          dataToSendGuest
-        );
-        console.log(
-          "new session started notification message emitted to guest"
-        );
-      }
-    }
-  );
-
-  socket.on("session_started_by_guest", ({ hostAddress, dataToSendHost }) => {
-    console.log("received reject session notification");
-    console.log("hostAddress", hostAddress);
-    console.log("dataToSendHost", dataToSendHost);
-    console.log("hostSockets", hostSockets);
-    if (hostSockets[hostAddress]) {
-      io.to(hostSockets[hostAddress]).emit("new_notification", dataToSendHost);
-      console.log(
-        "new session started by guest notification message emitted to guest"
-      );
-    }
-  });
-
-  socket.on(
-    "received_offchain_attestation",
-    ({ receiver_address, dataToSend }) => {
-      console.log("received reject session notification");
-      console.log("receiver_address", receiver_address);
-      console.log("dataToSend", dataToSend);
-      console.log("hostSockets", hostSockets);
-      if (hostSockets[receiver_address]) {
-        io.to(hostSockets[receiver_address]).emit(
-          "new_notification",
-          dataToSend
-        );
-        console.log(
-          "new session started by guest notification message emitted to guest"
-        );
-      }
-    }
-  );
-
-  socket.on("disconnect", () => {
-    for (let address in activeSockets) {
-      if (activeSockets[address] === socket.id) {
-        delete activeSockets[address];
-        break;
-      }
-    }
-
-    for (let hostAddress in hostSockets) {
-      if (hostSockets[hostAddress] === socket.id) {
-        delete hostSockets[hostAddress];
-        break;
-      }
-    }
-  });
+// Socket.io Setup
+const io = socketIo(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
 });
 
-const blockchainListener = new BlockchainListener();
+// MongoDB Connection
+mongoose
+  .connect(process.env.MONGODB_URI)
+  .then(() => console.log("Connected to MongoDB"))
+  .catch((err) => console.error("Failed to connect to MongoDB", err));
+
+// Initialize Notification Manager and Blockchain Listener
+const notificationManager = new NotificationManager(io);
+const blockchainListener = new BlockchainListener(notificationManager);
+
+// Start Blockchain Listener
 blockchainListener.start();
 
+// Graceful Shutdown
 process.on("SIGTERM", () => {
   console.log("SIGTERM received. Shutting down gracefully...");
   blockchainListener.stop();
@@ -469,10 +585,11 @@ process.on("SIGTERM", () => {
   });
 });
 
+// Default route
 app.use((req, res) => res.send("Socket server running"));
 
+// Start server
 const PORT = process.env.PORT || 3001;
-
 server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
