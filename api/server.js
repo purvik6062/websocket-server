@@ -19,6 +19,8 @@ const op_contractAddress = "0xcDF27F107725988f2261Ce2256bDfCdE8B382B10";
 // Constants
 const MAX_RETRIES = 5;
 const RETRY_INTERVAL = 5000;
+const hostSockets ={};
+const activeSockets ={};
 
 // URQL client configuration
 const createSubgraphClient = (url) => {
@@ -49,7 +51,6 @@ class NotificationManager {
   constructor(io) {
     this.io = io;
     this.connectedClients = new Map();
-    this.pendingNotifications = new Map();
     this.retryQueue = [];
     this.initialize();
   }
@@ -58,33 +59,6 @@ class NotificationManager {
     this.io.on("connection", (socket) => {
       console.log("New client connected:", socket.id);
 
-      socket.on("register_host", async ({ hostAddress, socketId }) => {
-        try {
-          console.log("Host registration:", hostAddress);
-
-          // Store connection with metadata
-          this.connectedClients.set(hostAddress, {
-            socketId: socketId,
-            lastActive: Date.now(),
-            socket: socket,
-          });
-
-          // Set up room for this address
-          socket.join(hostAddress);
-
-          // Send pending notifications
-          await this.sendPendingNotifications(hostAddress);
-
-          // Acknowledge registration
-          socket.emit("registration_successful", {
-            status: "success",
-            address: hostAddress,
-          });
-        } catch (error) {
-          console.error("Registration error:", error);
-          socket.emit("registration_error", { error: error.message });
-        }
-      });
 
       // // Handle other socket events
       // socket.on("notification_received", (data) => {
@@ -105,10 +79,10 @@ class NotificationManager {
         activeSockets[address] = socket.id;
       });
 
-      //   socket.on("register_host", ({ hostAddress, socketId }) => {
-      //     console.log("Host address registered for notifications:", hostAddress);
-      //     hostSockets[hostAddress] = socketId;
-      //   });
+        socket.on("register_host", ({ hostAddress, socketId }) => {
+          console.log("Host address registered for notifications:", hostAddress);
+          hostSockets[hostAddress] = socketId;
+        });
 
       socket.on("send_message", ({ addresses, message }) => {
         console.log("Sending message to addresses: ", addresses);
@@ -121,7 +95,8 @@ class NotificationManager {
           }
         });
       });
-
+      
+        // Session booking handler
       socket.on(
         "new_session",
         ({
@@ -150,6 +125,7 @@ class NotificationManager {
           }
         }
       );
+ // Session rejection handler
       socket.on("reject_session", ({ attendee_address, dataToSendGuest }) => {
         console.log("received reject session notification");
         console.log("host_address", attendee_address);
@@ -163,7 +139,7 @@ class NotificationManager {
           console.log("new reject notification message emitted to guest");
         }
       });
-
+       
       socket.on(
         "session_started_by_host",
         ({ attendeeAddress, dataToSendGuest }) => {
@@ -202,6 +178,7 @@ class NotificationManager {
         }
       );
 
+ // Attestation handler
       socket.on(
         "received_offchain_attestation",
         ({ receiver_address, dataToSend }) => {
@@ -221,6 +198,7 @@ class NotificationManager {
         }
       );
 
+
       socket.on("disconnect", () => {
         this.handleDisconnect(socket);
       });
@@ -230,30 +208,6 @@ class NotificationManager {
     setInterval(() => this.processRetryQueue(), 30000);
   }
 
-  async sendPendingNotifications(address) {
-    try {
-      const pendingNotifications = await Notification.find({
-        receiver_address: address,
-        read_status: false,
-      })
-        .sort({ createdAt: -1 })
-        .limit(10);
-
-      if (pendingNotifications.length > 0) {
-        const clientData = this.connectedClients.get(address);
-        if (clientData) {
-          this.io
-            .to(address)
-            .emit("pending_notifications", pendingNotifications);
-          console.log(
-            `Sent ${pendingNotifications.length} pending notifications to ${address}`
-          );
-        }
-      }
-    } catch (error) {
-      console.error("Error sending pending notifications:", error);
-    }
-  }
 
   async sendNotification(notification) {
     try {
@@ -267,11 +221,11 @@ class NotificationManager {
         this.io.to(receiverAddress).emit("new_notification", savedNotification);
 
         // Add to pending notifications until acknowledged
-        this.pendingNotifications.set(savedNotification._id.toString(), {
-          notification: savedNotification,
-          attempts: 1,
-          lastAttempt: Date.now(),
-        });
+        // this.pendingNotifications.set(savedNotification._id.toString(), {
+        //   notification: savedNotification,
+        //   attempts: 1,
+        //   lastAttempt: Date.now(),
+        // });
 
         console.log(`Notification sent to ${receiverAddress}`);
       } else {
@@ -322,12 +276,12 @@ class NotificationManager {
     }
   }
 
-  handleNotificationAcknowledgment(data) {
-    if (this.pendingNotifications.has(data.notificationId)) {
-      this.pendingNotifications.delete(data.notificationId);
-      console.log(`Notification ${data.notificationId} acknowledged`);
-    }
-  }
+  // handleNotificationAcknowledgment(data) {
+  //   if (this.pendingNotifications.has(data.notificationId)) {
+  //     this.pendingNotifications.delete(data.notificationId);
+  //     console.log(`Notification ${data.notificationId} acknowledged`);
+  //   }
+  // }
 
   handleDisconnect(socket) {
     for (const [address, data] of this.connectedClients.entries()) {
@@ -403,8 +357,7 @@ class BlockchainListener {
           await this.processNotificationsWithSocket(commonAddresses, chain);
         } else {
           // const commonAddresses = [
-          //   "0xa0f97344e9699F0D5d54c4158F9cf9892828C7F8",
-          //   "0x34849cec9e56c58a7597C243440eA45543AbdAf4",
+          //   "0xa0f97344e9699F0D5d54c4158F9cf9892828C7F8"
           // ];
           // const chain = "arbitrum";
           // await this.processNotificationsWithSocket(commonAddresses, chain);
