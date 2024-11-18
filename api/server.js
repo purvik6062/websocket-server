@@ -315,6 +315,7 @@ class BlockchainListener {
 
       await this.providers.arbitrum.ready;
       await this.providers.optimism.ready;
+      await this.processNotificationsWithSocket(commonAddresses, chain,voter,proposalId);
       console.log("Providers are ready");
     } catch (error) {
       console.error("Error setting up providers:", error);
@@ -354,13 +355,8 @@ class BlockchainListener {
 
         if (commonAddresses.length > 0) {
           console.log("Common addresses found:", commonAddresses);
-          await this.processNotificationsWithSocket(commonAddresses, chain);
+          await this.processNotificationsWithSocket(commonAddresses, chain,voter,proposalId.toString());
         } else {
-          // const commonAddresses = [
-          //   "0xa0f97344e9699F0D5d54c4158F9cf9892828C7F8"
-          // ];
-          // const chain = "arbitrum";
-          // await this.processNotificationsWithSocket(commonAddresses, chain);
           console.log("No common addresses found");
         }
       } catch (error) {
@@ -423,19 +419,20 @@ if(chain === "arbitrum"){
     }
   }
 
-  async processNotificationsWithSocket(commonAddresses, chain) {
+  async processNotificationsWithSocket(commonAddresses, chain,voter,proposalId) {
     for (const address of commonAddresses) {
+      const proposalLink =`/${chain}/proposals/${proposalId}`; 
       const notification = {
         receiver_address: address,
-        content: `New Vote cast detected for address ${address}`,
+        content: `Your Delegate (${voter}) has voted on a proposal in the ${chain} Collective. Stay informed about the latest decisions that may affect your interests.Check out the proposal details now!`,
         createdAt: Date.now(),
         read_status: false,
         notification_name: "Vote cast",
         notification_title: "casted vote",
         notification_type: "proposalVote",
-        additionalData: { chain },
+        additionalData: { chain , proposalLink},
       };
-
+// console.log("notification",notification);
       await this.notificationManager.sendNotification(notification);
     }
   }
