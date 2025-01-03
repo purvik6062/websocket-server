@@ -9,10 +9,13 @@ const fetch = require("cross-fetch");
 const mongoose = require("mongoose");
 const { getAllAddresses } = require("../controllers/userController");
 const Notification = require("../models/Notification");
+const User = require("../models/User");
+const {EmailService} = require('../emailService.js')
 
 // Contract ABIs and addresses
 const arb_abi = require("../arb_proposals_abi.json");
 const op_abi = require("../op_proposals_abi.json");
+const { template } = require("handlebars");
 const contractAddress = "0x789fC99093B09aD01C34DC7251D0C89ce743e5a4";
 const op_contractAddress = "0xcDF27F107725988f2261Ce2256bDfCdE8B382B10";
 
@@ -37,7 +40,7 @@ const createSubgraphClient = (url) => {
 };
 
 let arbClient, optimismClient;
-
+console.log("process.env.ARBITRUM_SUBGRAPH_URL",process.env.ARBITRUM_SUBGRAPH_URL);
 try {
   arbClient = createSubgraphClient(process.env.ARBITRUM_SUBGRAPH_URL);
   optimismClient = createSubgraphClient(process.env.OPTIMISM_SUBGRAPH_URL);
@@ -209,16 +212,21 @@ class NotificationManager {
   }
 
 
-  async sendNotification(notification) {
+  async sendNotification(notification,emailContent) {
     try {
       // Save to database
       const notificationDoc = new Notification(notification);
-      const savedNotification = await notificationDoc.save();
+      // const savedNotification = await notificationDoc.save();
 
+      // Find user email from database using receiver address
+      const user = await User.findOne({ address: notification.receiver_address });
+      if (user && user.emailId) {
+        emailContent.to = user.emailId;
+      }
       // Send to connected client
       const receiverAddress = notification.receiver_address;
       if (this.connectedClients.has(receiverAddress)) {
-        this.io.to(receiverAddress).emit("new_notification", savedNotification);
+        this.io.to(receiverAddress).emit("new_notification", notificationDoc);
 
         // Add to pending notifications until acknowledged
         // this.pendingNotifications.set(savedNotification._id.toString(), {
@@ -233,6 +241,16 @@ class NotificationManager {
           `Client ${receiverAddress} not connected, notification saved to DB`
         );
         // this.addToRetryQueue(savedNotification);
+        // Send email if receiver_email exists
+    if (emailContent.to) {
+      try {
+        console.log("Sending email to:", emailContent);
+        await EmailService.sendTemplatedEmail(emailContent);
+      } catch (emailError) {
+        console.error("Error sending email:", emailError);
+        // Continue with the function even if email fails
+      }
+    }
       }
     } catch (error) {
       console.error("Error sending notification:", error);
@@ -315,7 +333,7 @@ class BlockchainListener {
 
       await this.providers.arbitrum.ready;
       await this.providers.optimism.ready;
-      await this.processNotificationsWithSocket(commonAddresses, chain,voter,proposalId);
+      // await this.processNotificationsWithSocket(commonAddresses, chain,voter,proposalId);
       console.log("Providers are ready");
     } catch (error) {
       console.error("Error setting up providers:", error);
@@ -355,7 +373,7 @@ class BlockchainListener {
 
         if (commonAddresses.length > 0) {
           console.log("Common addresses found:", commonAddresses);
-          await this.processNotificationsWithSocket(commonAddresses, chain,voter,proposalId.toString());
+          await this.processNotificationsWithSocket(commonAddresses, chain,voter,proposalId.toString(),support);
         } else {
           console.log("No common addresses found");
         }
@@ -367,7 +385,7 @@ class BlockchainListener {
 
   async getSubgraphUserData(address, chain) {
     let DELEGATE_QUERY;
-    if (chain === "arbitrum") {
+    if (chain === "Arbitrum DAO") {
        DELEGATE_QUERY = gql`
         query GetUserData($address: String!) {
           delegate(id: $address) {
@@ -379,7 +397,7 @@ class BlockchainListener {
           }
         }
       `;
-    } else if (chain === "optimism") {
+    } else if (chain === "Optimism Collective") {
        DELEGATE_QUERY = gql`
         query GetUserData($address: String!) {
           Delegate_by_pk(id: $address) {
@@ -393,18 +411,18 @@ class BlockchainListener {
     }
 
     try {
-      const client = chain === "arbitrum" ? arbClient : optimismClient;
+      const client = chain ==="Arbitrum DAO" ? arbClient : optimismClient;
       if (!client) {
         throw new Error(`No client available for chain: ${chain}`);
       }
       let result;
-if(chain === "arbitrum"){
+if(chain === "Arbitrum DAO"){
        result = await client
         .query(DELEGATE_QUERY, {
           address: address.toLowerCase(),
         })
         .toPromise();
-    }else if(chain === "optimism"){
+    }else if(chain === "Optimism Collective"){
         result = await client
         .query(DELEGATE_QUERY, {
           address: address,
@@ -419,12 +437,13 @@ if(chain === "arbitrum"){
     }
   }
 
-  async processNotificationsWithSocket(commonAddresses, chain,voter,proposalId) {
+  async processNotificationsWithSocket(commonAddresses, chain,voter,proposalId,support) {
+    console.log("commonAddresses------------",commonAddresses,chain,voter,proposalId);
     for (const address of commonAddresses) {
       const proposalLink =`/${chain}/proposals/${proposalId}`; 
       const notification = {
         receiver_address: address,
-        content: `Your Delegate (${voter}) has voted on a proposal in the ${chain} Collective. Stay informed about the latest decisions that may affect your interests.Check out the proposal details now!`,
+        content: `Your Delegate (${voter}) has voted on a proposal in the ${chain}. Stay informed about the latest decisions that may affect your interests.Check out the proposal details now!`,
         createdAt: Date.now(),
         read_status: false,
         notification_name: "Vote cast",
@@ -432,8 +451,28 @@ if(chain === "arbitrum"){
         notification_type: "proposalVote",
         additionalData: { chain , proposalLink},
       };
+      const emailContent = {
+        name: 'Chora Club',
+        subject: `🎉 Your Delegate Casted their Vote on a Proposal in the ${chain} 🎉`,
+        template: 'proposalVote',
+        templateData: {
+            title: '🎉 Your Delegate Has Voted! 🎉',  
+            content: {
+              proposalId: proposalId,
+              voter: voter,
+              chain: chain,
+              shortVoter : `${voter.slice(0, 6)}...${voter.slice(-4)}`,
+              shortProposalId : `${proposalId.slice(0, 6)}...${proposalId.slice(-4)}`
+            },
+            VoteContent:` ${
+              support === 1 ? "For" : support === 0 ? "Against" : "Abstain"
+          }.`,
+          endContent:`By trusting your delegate, you have actively contributed to shaping the community’s future.`
+        },
+    };
+    
 // console.log("notification",notification);
-      await this.notificationManager.sendNotification(notification);
+      await this.notificationManager.sendNotification(notification,emailContent);
     }
   }
 
@@ -442,14 +481,12 @@ if(chain === "arbitrum"){
       await this.setupProviders();
       this.setupContracts();
 
-      const arbHandler = this.createVoteCastHandler("arbitrum");
-      const opHandler = this.createVoteCastHandler("optimism");
-
+      const arbHandler = this.createVoteCastHandler("Arbitrum DAO");
+      const opHandler = this.createVoteCastHandler("Optimism Collective");
       this.contracts.arbitrum.on("VoteCast", arbHandler);
       this.contracts.optimism.on("VoteCast", opHandler);
       this.contracts.arbitrum.on("VoteCastWithParams", arbHandler);
       this.contracts.optimism.on("VoteCastWithParams", opHandler);
-
       this.isListening = true;
       console.log("Blockchain listener started successfully");
     } catch (error) {
