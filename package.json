@@ -20,7 +20,7 @@
     "express": "^4.19.2",
     "handlebars": "^4.7.8",
     "mongoose": "^8.7.2",
-    "nodemailer": "^6.9.16",
+    "nodemailer": "^6.10.0",
     "socket.io": "^4.7.5",
     "urql": "^4.2.0"
   },

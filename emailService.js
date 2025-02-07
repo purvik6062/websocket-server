@@ -1,11 +1,13 @@
-import nodemailer from "nodemailer";
-import handlebars from "handlebars";
-import { voteNotificationTemplate } from "./templates/voteNotificationTemplate.js";
+const nodemailer = require("nodemailer");
+const handlebars = require("handlebars");
+const {
+  voteNotificationTemplate,
+} = require("./templates/voteNotificationTemplate.js");
 
 class EmailTransport {
   constructor() {
     const { SMTP_EMAIL, SMTP_PASSWORD } = process.env;
-    
+
     this.transport = nodemailer.createTransport({
       host: "smtpout.secureserver.net",
       secure: true,
@@ -18,7 +20,7 @@ class EmailTransport {
         ciphers: "SSLv3",
       },
     });
-    
+
     this.SMTP_EMAIL = SMTP_EMAIL;
   }
 
@@ -27,7 +29,7 @@ class EmailTransport {
       await this.transport.verify();
       return true;
     } catch (error) {
-      console.error('Email transport verification failed:', error);
+      console.error("Email transport verification failed:", error);
       return false;
     }
   }
@@ -45,7 +47,7 @@ class EmailTransport {
       });
       return sendResult;
     } catch (error) {
-      console.error('Failed to send email:', error);
+      console.error("Failed to send email:", error);
       throw error;
     }
   }
@@ -53,34 +55,45 @@ class EmailTransport {
 
 const emailTransport = new EmailTransport();
 
-export class EmailService {
-  static proposalVoteTemplate(title, content,VoteContent,endContent) {
+class EmailService {
+  static proposalVoteTemplate(title, content, VoteContent, endContent) {
     try {
       const template = handlebars.compile(voteNotificationTemplate);
       return template({
         title,
         content,
         VoteContent,
-        endContent
+        endContent,
       });
     } catch (error) {
-      console.error('Failed to compile proposal vote template:', error);
+      console.error("Failed to compile proposal vote template:", error);
       throw error;
     }
   }
 
-  static async sendTemplatedEmail({ to, name, subject, template, templateData }) {
+  static async sendTemplatedEmail({
+    to,
+    name,
+    subject,
+    template,
+    templateData,
+  }) {
     try {
       // Verify connection
       const isVerified = await emailTransport.verify();
       if (!isVerified) {
-        throw new Error('Failed to verify email transport connection');
+        throw new Error("Failed to verify email transport connection");
       }
       // Compile template
       let htmlBody;
-      if (template === 'proposalVote') {
-        const { title, content,VoteContent,endContent } = templateData;
-        htmlBody = this.proposalVoteTemplate(title, content,VoteContent,endContent);
+      if (template === "proposalVote") {
+        const { title, content, VoteContent, endContent } = templateData;
+        htmlBody = this.proposalVoteTemplate(
+          title,
+          content,
+          VoteContent,
+          endContent
+        );
       } else {
         throw new Error(`Unknown template type: ${template}`);
       }
@@ -88,13 +101,15 @@ export class EmailService {
       // Send email
       return await emailTransport.sendMail({
         to,
-        name: name || 'System',
+        name: name || "System",
         subject,
         body: htmlBody,
       });
     } catch (error) {
-      console.error('Failed to send templated email:', error);
+      console.error("Failed to send templated email:", error);
       throw error;
     }
   }
 }
+
+module.exports = { EmailService };

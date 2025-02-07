@@ -10,7 +10,7 @@ const mongoose = require("mongoose");
 const { getAllAddresses } = require("../controllers/userController");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
-const {EmailService} = require('../emailService.js')
+const { EmailService } = require("../emailService.js");
 
 // Contract ABIs and addresses
 const arb_abi = require("../arb_proposals_abi.json");
@@ -22,8 +22,8 @@ const op_contractAddress = "0xcDF27F107725988f2261Ce2256bDfCdE8B382B10";
 // Constants
 const MAX_RETRIES = 5;
 const RETRY_INTERVAL = 5000;
-const hostSockets ={};
-const activeSockets ={};
+const hostSockets = {};
+const activeSockets = {};
 
 // URQL client configuration
 const createSubgraphClient = (url) => {
@@ -40,7 +40,10 @@ const createSubgraphClient = (url) => {
 };
 
 let arbClient, optimismClient;
-console.log("process.env.ARBITRUM_SUBGRAPH_URL",process.env.ARBITRUM_SUBGRAPH_URL);
+console.log(
+  "process.env.ARBITRUM_SUBGRAPH_URL",
+  process.env.ARBITRUM_SUBGRAPH_URL
+);
 try {
   arbClient = createSubgraphClient(process.env.ARBITRUM_SUBGRAPH_URL);
   optimismClient = createSubgraphClient(process.env.OPTIMISM_SUBGRAPH_URL);
@@ -62,7 +65,6 @@ class NotificationManager {
     this.io.on("connection", (socket) => {
       console.log("New client connected:", socket.id);
 
-
       // // Handle other socket events
       // socket.on("notification_received", (data) => {
       //     this.handleNotificationAcknowledgment(data);
@@ -82,10 +84,10 @@ class NotificationManager {
         activeSockets[address] = socket.id;
       });
 
-        socket.on("register_host", ({ hostAddress, socketId }) => {
-          console.log("Host address registered for notifications:", hostAddress);
-          hostSockets[hostAddress] = socketId;
-        });
+      socket.on("register_host", ({ hostAddress, socketId }) => {
+        console.log("Host address registered for notifications:", hostAddress);
+        hostSockets[hostAddress] = socketId;
+      });
 
       socket.on("send_message", ({ addresses, message }) => {
         console.log("Sending message to addresses: ", addresses);
@@ -98,8 +100,8 @@ class NotificationManager {
           }
         });
       });
-      
-        // Session booking handler
+
+      // Session booking handler
       socket.on(
         "new_session",
         ({
@@ -128,7 +130,7 @@ class NotificationManager {
           }
         }
       );
- // Session rejection handler
+      // Session rejection handler
       socket.on("reject_session", ({ attendee_address, dataToSendGuest }) => {
         console.log("received reject session notification");
         console.log("host_address", attendee_address);
@@ -142,7 +144,7 @@ class NotificationManager {
           console.log("new reject notification message emitted to guest");
         }
       });
-       
+
       socket.on(
         "session_started_by_host",
         ({ attendeeAddress, dataToSendGuest }) => {
@@ -181,7 +183,6 @@ class NotificationManager {
         }
       );
 
- // Attestation handler
       socket.on(
         "received_offchain_attestation",
         ({ receiver_address, dataToSend }) => {
@@ -201,6 +202,44 @@ class NotificationManager {
         }
       );
 
+      socket.on("officehours_scheduled", ({ notifications }) => {
+        console.log("connected");
+
+        notifications.forEach(async (notification) => {
+          console.log("notification", notification);
+          const receiverAddress = notification.receiver_address;
+          if (hostSockets[receiverAddress]) {
+            this.io.to(hostSockets[receiverAddress]).emit("new_notification", {
+              ...notification,
+            });
+            console.log(
+              `Office hours scheduled notification sent to ${receiverAddress}`
+            );
+          } else {
+            console.log(`No active socket for ${receiverAddress}`);
+          }
+        });
+      });
+
+      socket.on("officehours_started", ({ notifications }) => {
+        console.log(
+          "Received office hours started notifications:",
+          notifications
+        );
+        notifications.forEach(async (notification) => {
+          const receiverAddress = notification.receiver_address;
+          if (hostSockets[receiverAddress]) {
+            this.io.to(hostSockets[receiverAddress]).emit("new_notification", {
+              ...notification,
+            });
+            console.log(
+              `Office hours scheduled notification sent to ${receiverAddress}`
+            );
+          } else {
+            console.log(`No active socket for ${receiverAddress}`);
+          }
+        });
+      });
 
       socket.on("disconnect", () => {
         this.handleDisconnect(socket);
@@ -211,15 +250,16 @@ class NotificationManager {
     setInterval(() => this.processRetryQueue(), 30000);
   }
 
-
-  async sendNotification(notification,emailContent) {
+  async sendNotification(notification, emailContent) {
     try {
       // Save to database
       const notificationDoc = new Notification(notification);
       // const savedNotification = await notificationDoc.save();
 
       // Find user email from database using receiver address
-      const user = await User.findOne({ address: notification.receiver_address });
+      const user = await User.findOne({
+        address: notification.receiver_address,
+      });
       if (user && user.emailId) {
         emailContent.to = user.emailId;
       }
@@ -242,15 +282,15 @@ class NotificationManager {
         );
         // this.addToRetryQueue(savedNotification);
         // Send email if receiver_email exists
-    if (emailContent.to) {
-      try {
-        console.log("Sending email to:", emailContent);
-        await EmailService.sendTemplatedEmail(emailContent);
-      } catch (emailError) {
-        console.error("Error sending email:", emailError);
-        // Continue with the function even if email fails
-      }
-    }
+        if (emailContent.to) {
+          try {
+            console.log("Sending email to:", emailContent);
+            await EmailService.sendTemplatedEmail(emailContent);
+          } catch (emailError) {
+            console.error("Error sending email:", emailError);
+            // Continue with the function even if email fails
+          }
+        }
       }
     } catch (error) {
       console.error("Error sending notification:", error);
@@ -373,7 +413,13 @@ class BlockchainListener {
 
         if (commonAddresses.length > 0) {
           console.log("Common addresses found:", commonAddresses);
-          await this.processNotificationsWithSocket(commonAddresses, chain,voter,proposalId.toString(),support);
+          await this.processNotificationsWithSocket(
+            commonAddresses,
+            chain,
+            voter,
+            proposalId.toString(),
+            support
+          );
         } else {
           console.log("No common addresses found");
         }
@@ -386,7 +432,7 @@ class BlockchainListener {
   async getSubgraphUserData(address, chain) {
     let DELEGATE_QUERY;
     if (chain === "Arbitrum DAO") {
-       DELEGATE_QUERY = gql`
+      DELEGATE_QUERY = gql`
         query GetUserData($address: String!) {
           delegate(id: $address) {
             blockTimestamp
@@ -398,7 +444,7 @@ class BlockchainListener {
         }
       `;
     } else if (chain === "Optimism Collective") {
-       DELEGATE_QUERY = gql`
+      DELEGATE_QUERY = gql`
         query GetUserData($address: String!) {
           Delegate_by_pk(id: $address) {
             delegatedFromCount
@@ -411,24 +457,24 @@ class BlockchainListener {
     }
 
     try {
-      const client = chain ==="Arbitrum DAO" ? arbClient : optimismClient;
+      const client = chain === "Arbitrum DAO" ? arbClient : optimismClient;
       if (!client) {
         throw new Error(`No client available for chain: ${chain}`);
       }
       let result;
-if(chain === "Arbitrum DAO"){
-       result = await client
-        .query(DELEGATE_QUERY, {
-          address: address.toLowerCase(),
-        })
-        .toPromise();
-    }else if(chain === "Optimism Collective"){
+      if (chain === "Arbitrum DAO") {
         result = await client
-        .query(DELEGATE_QUERY, {
-          address: address,
-        })
-        .toPromise();
-    }
+          .query(DELEGATE_QUERY, {
+            address: address.toLowerCase(),
+          })
+          .toPromise();
+      } else if (chain === "Optimism Collective") {
+        result = await client
+          .query(DELEGATE_QUERY, {
+            address: address,
+          })
+          .toPromise();
+      }
       if (result.error) throw result.error;
       return result.data?.delegate || null;
     } catch (error) {
@@ -437,10 +483,22 @@ if(chain === "Arbitrum DAO"){
     }
   }
 
-  async processNotificationsWithSocket(commonAddresses, chain,voter,proposalId,support) {
-    console.log("commonAddresses------------",commonAddresses,chain,voter,proposalId);
+  async processNotificationsWithSocket(
+    commonAddresses,
+    chain,
+    voter,
+    proposalId,
+    support
+  ) {
+    console.log(
+      "commonAddresses------------",
+      commonAddresses,
+      chain,
+      voter,
+      proposalId
+    );
     for (const address of commonAddresses) {
-      const proposalLink =`/${chain}/proposals/${proposalId}`; 
+      const proposalLink = `/${chain}/proposals/${proposalId}`;
       const notification = {
         receiver_address: address,
         content: `Your Delegate (${voter}) has voted on a proposal in the ${chain}. Stay informed about the latest decisions that may affect your interests.Check out the proposal details now!`,
@@ -449,30 +507,35 @@ if(chain === "Arbitrum DAO"){
         notification_name: "Vote cast",
         notification_title: "casted vote",
         notification_type: "proposalVote",
-        additionalData: { chain , proposalLink},
+        additionalData: { chain, proposalLink },
       };
       const emailContent = {
-        name: 'Chora Club',
+        name: "Chora Club",
         subject: `🎉 Your Delegate Casted their Vote on a Proposal in the ${chain} 🎉`,
-        template: 'proposalVote',
+        template: "proposalVote",
         templateData: {
-            title: '🎉 Your Delegate Has Voted! 🎉',  
-            content: {
-              proposalId: proposalId,
-              voter: voter,
-              chain: chain,
-              shortVoter : `${voter.slice(0, 6)}...${voter.slice(-4)}`,
-              shortProposalId : `${proposalId.slice(0, 6)}...${proposalId.slice(-4)}`
-            },
-            VoteContent:` ${
-              support === 1 ? "For" : support === 0 ? "Against" : "Abstain"
+          title: "🎉 Your Delegate Has Voted! 🎉",
+          content: {
+            proposalId: proposalId,
+            voter: voter,
+            chain: chain,
+            shortVoter: `${voter.slice(0, 6)}...${voter.slice(-4)}`,
+            shortProposalId: `${proposalId.slice(0, 6)}...${proposalId.slice(
+              -4
+            )}`,
+          },
+          VoteContent: ` ${
+            support === 1 ? "For" : support === 0 ? "Against" : "Abstain"
           }.`,
-          endContent:`By trusting your delegate, you have actively contributed to shaping the community’s future.`
+          endContent: `By trusting your delegate, you have actively contributed to shaping the community’s future.`,
         },
-    };
-    
-// console.log("notification",notification);
-      await this.notificationManager.sendNotification(notification,emailContent);
+      };
+
+      // console.log("notification",notification);
+      await this.notificationManager.sendNotification(
+        notification,
+        emailContent
+      );
     }
   }
 
