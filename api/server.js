@@ -241,6 +241,26 @@ class NotificationManager {
         });
       });
 
+      socket.on("officehours_deleted", ({ notifications }) => {
+        console.log(
+          "Received office hours started notifications:",
+          notifications
+        );
+        notifications.forEach(async (notification) => {
+          const receiverAddress = notification.receiver_address;
+          if (hostSockets[receiverAddress]) {
+            this.io.to(hostSockets[receiverAddress]).emit("new_notification", {
+              ...notification,
+            });
+            console.log(
+              `Office hours scheduled notification sent to ${receiverAddress}`
+            );
+          } else {
+            console.log(`No active socket for ${receiverAddress}`);
+          }
+        });
+      });
+
       socket.on("disconnect", () => {
         this.handleDisconnect(socket);
       });
