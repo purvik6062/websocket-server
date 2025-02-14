@@ -9,7 +9,7 @@ class EmailTransport {
     const { SMTP_EMAIL, SMTP_PASSWORD } = process.env;
 
     this.transport = nodemailer.createTransport({
-      host: "smtpout.secureserver.net",
+      host: "smtp.gmail.com",
       secure: true,
       port: 465,
       auth: {
